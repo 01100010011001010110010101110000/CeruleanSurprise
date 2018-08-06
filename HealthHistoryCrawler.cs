@@ -10,8 +10,8 @@ using Microsoft.Azure.KeyVault;
 using Microsoft.Azure.Management.Compute.Fluent;
 using Microsoft.Azure.Management.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent;
-using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
 using Microsoft.Azure.Management.ResourceManager.Fluent.Authentication;
+using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
 using Microsoft.Azure.Services.AppAuthentication;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Host;
@@ -29,6 +29,7 @@ namespace CeruleanSurprise
     {
         public TableStatusHistory(Value historyValue)
         {
+            // '/' is a reserved character in azure table rows
             this.PartitionKey = System.Text.RegularExpressions.Regex.Replace(historyValue.Id, "/", "|");
             this.RowKey = historyValue.Properties.OccuredTime.ToString("u");
             this.Resource = historyValue.Id.Split('/')[8];
@@ -155,6 +156,9 @@ namespace CeruleanSurprise
             var tokenProvider = new AzureServiceTokenProvider();
             var accessToken = tokenProvider.GetAccessTokenAsync("https://management.azure.com/").Result;
 
+            client.DefaultRequestHeaders.Add("Accept", "application/json");
+            client.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
+
             var credentials = new Microsoft.Rest.TokenCredentials(accessToken, "Bearer");
             var azureCreds = new AzureCredentials(credentials, credentials, credentials.TenantId, AzureEnvironment.AzureGlobalCloud);
 
@@ -168,9 +172,6 @@ namespace CeruleanSurprise
         }
         internal static async Task<HttpResponseMessage> GetHttpAsyncWithRetry(string url, string bearerToken, TraceWriter log, int retries = 5)
         {
-            client.DefaultRequestHeaders.Add("Authorization", $"Bearer {bearerToken}");
-            client.DefaultRequestHeaders.Add("Accept", "application/json");
-
             while (true)
             {
                 var result = await client.GetAsync(url);
@@ -236,7 +237,7 @@ namespace CeruleanSurprise
                 foreach (var value in history.Value)
                 {
                     //Current statuses have variable timestamps and result in large numbers of duplicate entries
-                    if (value.Properties.AvailabilityState == "Available" && value.Id.ToLower().Contains("current")) { continue; }
+                    if (value.Id.ToLower().Contains("current")) { continue; }
                     TableStatusHistory tableHistory = new TableStatusHistory(value);
                     TableOperation insert = TableOperation.Insert(tableHistory);
                     insertTasks.Add(table.ExecuteAsync(insert));
@@ -282,7 +283,14 @@ namespace CeruleanSurprise
                 Task.WaitAll(insertTasks.ToArray());
                 log.Info($"Inserted: {clock.ElapsedMilliseconds}ms");
             }
-            catch (Microsoft.WindowsAzure.Storage.StorageException err) { log.Error($"{err.RequestInformation.ExtendedErrorInformation}"); }
+            catch (Microsoft.WindowsAzure.Storage.StorageException err)
+            {
+                log.Info(err.RequestInformation.ExtendedErrorInformation.ToString());
+            }
+            catch (Exception err)
+            {
+                log.Info(err.InnerException.ToString());
+            }
         }
     }
 }
